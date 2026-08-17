@@ -1,0 +1,50 @@
+# Environment
+.env
+*.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# Data / runtime (never commit user data, DB, logs, vector store, models)
+data/db/*.db
+data/vector_store/*
+data/user_files/*
+!data/vector_store/.gitkeep
+!data/user_files/.gitkeep
+logs/*.log
+
+# Model weights (Whisper/Vosk/Piper models downloaded at runtime)
+*.bin
+*.onnx
+*.pt
+models/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# Test / coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Installer build artifacts
+installer/output/
+
+# External user-dropped plugins (dev-mode location; see docs/architecture/PLUGIN_SYSTEM.md)
+/plugins/
+
+# User settings override, written by the Settings UI (dev-mode location; see app/core/config.py)
+/user_settings.yaml

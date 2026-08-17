@@ -1,0 +1,82 @@
+# ============================================================
+# FRIDAY OS — Application Settings (non-secret config)
+# Secrets (API keys) live in .env, NOT here. This file is safe
+# to commit to git.
+# ============================================================
+
+app:
+  name: "FRIDAY"
+  user_name: "Suraj"
+  version: "0.1.0"
+  start_on_boot: true
+  minimize_to_tray: true
+
+wake_word:
+  phrase: "friday"          # single word only, per spec — no "hey"/"ok" prefix
+  sensitivity: 0.55
+  engine: "porcupine"
+
+voice:
+  stt_engine: "faster_whisper"   # faster_whisper | vosk | google
+  stt_model_size: "base"         # tiny | base | small | medium | large-v3
+  stt_device: "cpu"              # cpu | cuda
+  stt_compute_type: "int8"       # int8 (cpu) | float16 (cuda) | float32
+  stt_language: "en"             # null/omit to auto-detect (slower)
+  tts_engine: "edge_tts"         # edge_tts | pyttsx3 (piper | elevenlabs later)
+  edge_voice: "en-IN-NeerjaNeural"
+  language: "en-IN"
+  fallback_language: "hi-IN"
+  offline_mode: false
+  silence_threshold: 0.02        # RMS energy below this = silence, for end-of-utterance detection
+  silence_duration_seconds: 1.2  # how long silence must persist to end an utterance
+  max_utterance_seconds: 15       # hard cap so a stuck mic can't listen forever
+
+brain:
+  provider_priority:
+    - gemini
+    - groq
+    - openrouter
+    - together
+    - openai
+    - ollama
+  max_context_messages: 20
+  temperature: 0.6
+
+memory:
+  short_term_turns: 20
+  long_term_enabled: true
+  vector_store: "chroma"
+
+gui:
+  theme: "dark"              # dark | light
+  accent_color: "#00D4FF"
+  animations_enabled: true
+
+monitoring:
+  poll_interval_seconds: 5
+  cpu_warning_threshold: 90
+  ram_warning_threshold: 90
+  disk_warning_threshold_gb: 10
+  battery_warning_percent: 20
+
+automation:
+  require_confirmation_for_delete: true
+  require_confirmation_for_browser_forms: true
+
+finance:
+  alert_check_interval_seconds: 60
+
+productivity:
+  reminder_check_interval_seconds: 30
+
+update:
+  # Set this once you publish FRIDAY OS on GitHub, e.g. "Suraj/friday-os".
+  # Update checks are skipped entirely (no error, just a debug log) while
+  # this is empty -- there's nothing to check against yet.
+  github_repo: ""
+  check_interval_hours: 24
+
+logging:
+  level: "INFO"
+  rotate_mb: 10
+  retain_days: 14

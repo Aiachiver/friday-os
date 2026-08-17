@@ -1,0 +1,92 @@
+# ============================================================
+# FRIDAY OS — Dependency Manifest
+# Grouped by the phase that introduces them. Only "Phase 1 —
+# CORE" is installed/required right now. Later groups are
+# commented out and will be uncommented as each phase lands,
+# so `pip install -r requirements.txt` never drags in half-
+# finished subsystems.
+# ============================================================
+
+# ---------------- Phase 1 — CORE FOUNDATION ----------------
+pydantic>=2.7                  # settings & data validation
+pydantic-settings>=2.3         # .env + yaml config loading
+python-dotenv>=1.0             # .env parsing
+PyYAML>=6.0                    # config/settings.yaml, logging.yaml
+loguru>=0.7                    # structured logging
+SQLAlchemy>=2.0                # ORM (SQLite now, Postgres-ready later)
+alembic>=1.13                  # DB schema migrations
+APScheduler>=3.10              # scheduled/background jobs
+qasync>=0.27                   # bridges asyncio <-> Qt event loop
+PySide6>=6.7                   # GUI framework (Qt for Python)
+pystray>=0.19                  # system tray icon (fallback/lightweight)
+
+# ---------------- Phase 2 — VOICE ENGINE --------------------
+pvporcupine>=3.0.2            # wake word detection ("Friday" — custom trained)
+faster-whisper>=1.0            # local STT (primary)
+sounddevice>=0.4.6             # mic capture + playback
+numpy>=1.26                    # audio buffer math
+edge-tts>=6.1                  # primary TTS (natural, free, online)
+pyttsx3>=2.90                  # offline TTS fallback
+playsound==1.2.2                # mp3 playback on Windows (pin: later versions are broken)
+soundfile>=0.12                 # WAV playback path (used if a TTS engine renders WAV instead of MP3)
+# vosk>=0.3.45                 # local STT (lightweight fallback) — Phase 2.1 if needed
+# SpeechRecognition>=3.10      # Google Speech API wrapper (online fallback) — Phase 2.1 if needed
+# piper-tts>=1.2                # optional local neural TTS
+# elevenlabs>=1.3               # optional premium TTS
+
+# ---------------- Phase 3 — AI BRAIN, MEMORY, AUTOMATION ----
+openai>=1.30                   # OpenAI-compatible client -- used for OpenAI, Gemini, Groq, Together, OpenRouter, Ollama (one client, five providers via base_url)
+psutil>=5.9                    # process/resource management
+pyperclip>=1.8.2                # clipboard manager (cross-platform)
+send2trash>=1.8                 # safe delete (recycle bin / trash, not permanent by default)
+mss>=9.0                        # cross-platform screenshot capture
+playwright>=1.44                # browser automation
+pywin32>=306; sys_platform == "win32"                  # Windows API access (startup registry, native calls)
+pycaw>=20240210; sys_platform == "win32"                # Windows volume control
+comtypes>=1.4; sys_platform == "win32"                  # required by pycaw
+screen-brightness-control>=0.24  # brightness control (best-effort per platform/driver support)
+# chromadb / sentence-transformers deliberately NOT added -- long-term
+# memory in this project is structured (categorized facts), not
+# free-form semantic blobs, so a vector store would be unused
+# infrastructure. See app/data/models.py docstring.
+
+# ---------------- Phase 4 — FINANCIAL INTELLIGENCE -----------
+yfinance>=0.2.40                # market data: US/Indian stocks, crypto, forex, commodities -- one API, no key needed
+ta>=0.11                        # technical indicators (RSI, MACD, EMA, SMA, ATR, Bollinger Bands, VWAP)
+mplfinance==0.12.10b0            # candlestick charting -- pinned exact: no stable (non-beta) 0.12.x release exists yet, so a >=0.12 constraint fails pip's default prerelease exclusion
+pandas>=2.2                     # used directly for OHLCV dataframe handling
+vaderSentiment>=3.3.2            # lexicon-based news headline sentiment (deterministic, no model download)
+APScheduler>=3.10                # already required by core, listed again here as the Phase 4 consumer (price alert polling)
+# ccxt / nsetools deliberately NOT added -- yfinance already covers
+# crypto and Indian equities (.NS/.BO suffixes) through the same
+# interface as everything else, so a second market-data SDK would be
+# duplicate plumbing with no new asset-class coverage.
+
+# ---------------- Phase 5 — VISION / OCR ----------------------
+pytesseract>=0.3.10             # OCR wrapper -- requires the Tesseract binary separately, see docs/architecture/VISION_SETUP.md
+Pillow>=10.3                     # image loading/encoding for OCR and vision API calls
+PyMuPDF>=1.24                    # PDF text extraction (native + OCR fallback) and embedded image extraction
+# opencv-python / easyocr deliberately NOT added -- object recognition
+# and image understanding use the AI brain's vision-capable models
+# (already wired via ProviderRouter) rather than a separate local CV
+# stack, per the spec's "object recognition using AI APIs". Tesseract
+# covers the exact-text-extraction case OCR is actually good at.
+
+# ---------------- Phase 6 — PLUGINS ----------------------------
+httpx>=0.27                     # used by the Weather plugin (Open-Meteo) -- also a transitive dep of openai, listed explicitly since plugin code shouldn't rely on an undeclared transitive dependency
+spotipy>=2.24                   # Spotify plugin (OAuth playback control) -- pure Python, no native binary, safe to always install even if unconfigured
+# psutil (System Monitor plugin) already required from Phase 3 -- no new dep there.
+# Third-party/external plugins (dropped into the project-root plugins/
+# directory) may need their own packages -- those are documented per
+# plugin, not listed here, since they're not part of this shipped app.
+
+# ---------------- Phase 7 — INSTALLER / TESTING -----------------
+pytest>=8.2
+pytest-asyncio>=0.23
+pytest-mock>=3.14
+pytest-cov>=5.0                 # coverage reporting
+ruff>=0.4
+black>=24.4
+mypy>=1.10
+packaging>=24.0                 # semantic version comparison for the update checker
+pyinstaller>=6.10                # builds the Windows .exe

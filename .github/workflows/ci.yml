@@ -1,0 +1,77 @@
+name: CI
+
+"on":
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: ruff
+        run: ruff check .
+
+      - name: black --check
+        run: black --check .
+
+      - name: mypy
+        run: mypy app
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      # portaudio: needed to import sounddevice (voice input).
+      # tesseract-ocr: needed for the real (not mocked) OCR test, which
+      # actually renders an image and runs it through Tesseract -- see
+      # tests/unit/test_ocr.py.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y portaudio19-dev libsndfile1 tesseract-ocr
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run database migrations (smoke test)
+        run: alembic upgrade head
+        env:
+          DATABASE_URL: "sqlite:///data/db/friday.db"
+
+      - name: Run test suite
+        run: pytest --cov=app --cov-report=term-missing
+        env:
+          DATABASE_URL: "sqlite:///data/db/friday.db"
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: htmlcov/
+          if-no-files-found: ignore
+
+  # Windows-only concerns (pywin32/pycaw imports, Porcupine/faster-whisper
+  # native libs, PyInstaller/Inno Setup packaging) are NOT covered by this
+  # CI -- they need a real Windows runner and, for the installer, Inno
+  # Setup, which isn't installed on GitHub's hosted runners by default.
+  # See docs/architecture/INSTALLER_GUIDE.md for that step; it's a manual
+  # per-release action, not part of this automated workflow.
