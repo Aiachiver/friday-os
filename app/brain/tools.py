@@ -103,8 +103,15 @@ class ToolRegistry:
         handler: ToolHandler,
         requires_confirmation: ConfirmationCheck = False,
     ) -> None:
+        if name in self._tools:
+            raise ValueError(f"Tool '{name}' is already registered.")
+
         self._tools[name] = RegisteredTool(
-            spec=ToolSpec(name=name, description=description, parameters=parameters),
+            spec=ToolSpec(
+                name=name,
+                description=description,
+                parameters=parameters,
+            ),
             handler=handler,
             requires_confirmation=requires_confirmation,
         )
@@ -729,38 +736,76 @@ class ToolRegistry:
     def get_specs(self) -> list[ToolSpec]:
         return [t.spec for t in self._tools.values()]
 
-    def requires_confirmation(self, name: str, arguments: dict[str, Any] | None = None) -> bool:
+    def requires_confirmation(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> bool:
         tool = self._tools.get(name)
+
         if tool is None:
             return False
+
         check = tool.requires_confirmation
+
         if callable(check):
-            return check(arguments or {})
+            return bool(check(arguments or {}))
+
         return check
 
     def exists(self, name: str) -> bool:
         return name in self._tools
 
-    async def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    async def execute(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
         tool = self._tools.get(name)
-        if tool is None:
-            return {"success": False, "error": f"Unknown tool '{name}'"}
 
-        log.info("Executing tool {} with args {}", name, arguments)
+        if tool is None:
+            return {
+                "success": False,
+                "error": f"Unknown tool '{name}'",
+            }
+
+        log.info(
+            "Executing tool {} with args {}",
+            name,
+            arguments,
+        )
+
         try:
             if inspect.iscoroutinefunction(tool.handler):
                 result = await tool.handler(**arguments)
             else:
-                # Blocking calls (file I/O, subprocess, psutil) must not
-                # freeze the asyncio loop / GUI thread.
-                result = await asyncio.to_thread(tool.handler, **arguments)
-        except TypeError as exc:
-            log.warning("Tool {} called with bad arguments {}: {}", name, arguments, exc)
-            return {"success": False, "error": f"Invalid arguments for {name}: {exc}"}
-        except Exception as exc:  # noqa: BLE001 — a broken tool must not crash the conversation
-            log.exception("Tool {} raised an unexpected error", name)
-            return {"success": False, "error": str(exc)}
+                result = await asyncio.to_thread(
+                    tool.handler,
+                    **arguments,
+                )
 
-        if not isinstance(result, dict):
-            result = {"success": True, "result": result}
-        return result
+        except TypeError as exc:
+            log.warning(
+                "Tool {} received invalid arguments: {}",
+                name,
+                exc,
+            )
+            return {
+                "success": False,
+                "error": f"Invalid arguments for {name}: {exc}",
+            }
+
+        except Exception as exc:
+            log.exception("Tool {} failed", name)
+            return {
+                "success": False,
+                "error": str(exc),
+            }
+
+        if isinstance(result, dict):
+            return result
+
+        return {
+            "success": True,
+            "result": result,
+        }

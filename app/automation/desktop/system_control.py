@@ -32,16 +32,36 @@ def _unsupported(action: str) -> dict[str, Any]:
 
 
 def open_application(name: str) -> dict[str, Any]:
-    """Launches an application by name/path. On Windows this uses
-    os.startfile, which resolves the same way double-clicking would
-    (PATH, App Paths registry, file associations)."""
+    """Launch an application by name/path.
+
+    Special case:
+    - spotify -> opens Spotify Web in the default browser.
+    """
     try:
         if _IS_WINDOWS:
+            if name.lower().strip() == "spotify":
+                os.startfile("https://open.spotify.com")
+                log.info("Opened Spotify Web in browser.")
+                return {
+                    "success": True,
+                    "name": "spotify",
+                    "mode": "web",
+                }
+
             os.startfile(name)
+
         elif sys.platform == "darwin":
-            subprocess.Popen(["open", "-a", name])
+            if name.lower().strip() == "spotify":
+                subprocess.Popen(["open", "https://open.spotify.com"])
+            else:
+                subprocess.Popen(["open", "-a", name])
+
         else:
-            subprocess.Popen([name])
+            if name.lower().strip() == "spotify":
+                subprocess.Popen(["xdg-open", "https://open.spotify.com"])
+            else:
+                subprocess.Popen([name])
+
     except OSError as exc:
         log.warning("Failed to open application '{}': {}", name, exc)
         return {"success": False, "error": str(exc)}

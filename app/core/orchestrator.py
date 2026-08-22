@@ -1,16 +1,13 @@
 """
-The orchestrator is where events become actions.
+Connects incoming events to FRIDAY's actions.
 
-Phase 3 adds: the AI brain (multi-provider, with tool-calling), memory
-(short-term buffer + long-term facts), and a real confirmation flow for
-destructive tool calls (permanent delete, shutdown, restart, sleep) —
-the LLM can request those tools, but they never execute until the user
-has explicitly said yes to a spoken/typed confirmation question.
-
-The Phase 2 rule-based fast path (time/date/greeting/thanks) stays as a
-pre-filter in front of the brain: it's genuinely faster and cheaper for
-trivial queries, and there's no reason to round-trip an LLM call for
-"what time is it".
+Handles:
+- voice/text commands
+- fast-path commands
+- AI provider requests
+- tool execution
+- confirmation for destructive actions
+- TTS output
 """
 
 from __future__ import annotations
@@ -32,9 +29,28 @@ from app.voice.tts.base import Emotion, TTSEngine
 
 log = get_logger(__name__)
 
-_MAX_TOOL_ROUNDS = 3
-_CONFIRM_YES = {"yes", "yeah", "yep", "confirm", "confirmed", "do it", "go ahead", "sure"}
-_CONFIRM_NO = {"no", "nope", "cancel", "stop", "don't", "do not", "abort"}
+MAX_TOOL_ROUNDS = 3
+
+CONFIRM_YES = {
+    "yes",
+    "yeah",
+    "yep",
+    "confirm",
+    "confirmed",
+    "do it",
+    "go ahead",
+    "sure",
+}
+
+CONFIRM_NO = {
+    "no",
+    "nope",
+    "cancel",
+    "stop",
+    "don't",
+    "do not",
+    "abort",
+}
 
 
 class Orchestrator:
@@ -55,29 +71,53 @@ class Orchestrator:
         self._tools = tools
 
         settings = get_settings()
-        self._user_name: str = settings.get("app.user_name", "there")
-
-        # Set while waiting for the user to confirm/decline a destructive
-        # tool call. None means "no confirmation pending".
+        self._user_name = settings.get("app.user_name", "there")
         self._pending_confirmation: dict[str, Any] | None = None
 
-        bus.subscribe(EventType.WAKE_WORD_DETECTED, self._handle_wake_word)
-        bus.subscribe(EventType.TRANSCRIPT_READY, self._handle_transcript)
-        bus.subscribe(EventType.TRANSCRIPT_FAILED, self._handle_transcript_failed)
-        bus.subscribe(EventType.COMMAND_SUBMITTED, self._handle_transcript)  # GUI text reuses the same path
-        bus.subscribe(EventType.PRICE_ALERT_TRIGGERED, self._handle_price_alert)
-        bus.subscribe(EventType.UPDATE_AVAILABLE, self._handle_update_available)
-        bus.subscribe(EventType.REMINDER_DUE, self._handle_reminder_due)
+        self._subscribe_events()
 
-    # --- event handlers ---------------------------------------------------
+    def _subscribe_events(self) -> None:
+        self._bus.subscribe(
+            EventType.WAKE_WORD_DETECTED,
+            self._handle_wake_word,
+        )
+        self._bus.subscribe(
+            EventType.TRANSCRIPT_READY,
+            self._handle_transcript,
+        )
+        self._bus.subscribe(
+            EventType.TRANSCRIPT_FAILED,
+            self._handle_transcript_failed,
+        )
+        self._bus.subscribe(
+            EventType.COMMAND_SUBMITTED,
+            self._handle_transcript,
+        )
+        self._bus.subscribe(
+            EventType.PRICE_ALERT_TRIGGERED,
+            self._handle_price_alert,
+        )
+        self._bus.subscribe(
+            EventType.UPDATE_AVAILABLE,
+            self._handle_update_available,
+        )
+        self._bus.subscribe(
+            EventType.REMINDER_DUE,
+            self._handle_reminder_due,
+        )
 
     async def _handle_wake_word(self, event: Event) -> None:
-        await self._speak(f"Yes, {self._user_name}.", Emotion.CALM)
+        await self._speak(
+            f"Yes, {self._user_name}.",
+            Emotion.CALM,
+        )
 
     async def _handle_transcript(self, event: Event) -> None:
-        text: str = event.payload.get("text", "")
+        text = event.payload.get("text", "").strip()
+
         if not text:
             return
+
         log.info("Handling command: {!r}", text)
 
         if self._pending_confirmation is not None:
@@ -85,7 +125,8 @@ class Orchestrator:
             return
 
         fast_path = self._try_fast_path(text)
-        if fast_path is not None:
+
+        if fast_path:
             reply, emotion = fast_path
             self._memory.add_user_message(text)
             self._memory.add_assistant_message(reply)
@@ -97,60 +138,105 @@ class Orchestrator:
     async def _handle_transcript_failed(self, event: Event) -> None:
         error = event.payload.get("error", "unknown error")
         log.warning("Transcription failed: {}", error)
-        await self._speak("Sorry, I didn't catch that.", Emotion.CALM)
+
+        await self._speak(
+            "Sorry, I didn't catch that.",
+            Emotion.CALM,
+        )
 
     async def _handle_price_alert(self, event: Event) -> None:
         symbol = event.payload.get("symbol", "?")
         condition = event.payload.get("condition", "?")
         target = event.payload.get("target_price", "?")
         current = event.payload.get("current_price", "?")
-        text = f"Heads up — {symbol} just went {condition} your target of {target}. It's currently at {current}."
-        await self._speak(text, Emotion.EXCITED)
+
+        message = (
+            f"Heads up — {symbol} just went {condition} "
+            f"your target of {target}. It's currently at {current}."
+        )
+
+        await self._speak(message, Emotion.EXCITED)
 
     async def _handle_update_available(self, event: Event) -> None:
-        latest = event.payload.get("latest_version", "a newer version")
-        text = f"By the way, version {latest} of FRIDAY is available. Update whenever you get a chance."
-        await self._speak(text, Emotion.NORMAL)
+        version = event.payload.get(
+            "latest_version",
+            "a newer version",
+        )
+
+        await self._speak(
+            f"By the way, version {version} of FRIDAY is available. "
+            "Update whenever you get a chance.",
+            Emotion.NORMAL,
+        )
 
     async def _handle_reminder_due(self, event: Event) -> None:
-        reminder_text = event.payload.get("text", "something")
-        await self._speak(f"Reminder — {reminder_text}", Emotion.NORMAL)
+        text = event.payload.get("text", "something")
 
-    # --- Phase 2 fast path (kept: cheap, instant, no reason to involve an LLM) --
+        await self._speak(
+            f"Reminder — {text}",
+            Emotion.NORMAL,
+        )
 
-    def _try_fast_path(self, text: str) -> tuple[str, Emotion] | None:
-        lowered = text.lower().strip()
+    def _try_fast_path(
+        self,
+        text: str,
+    ) -> tuple[str, Emotion] | None:
+        command = text.lower().strip()
 
-        if any(phrase in lowered for phrase in ("what time", "current time")):
+        if "what time" in command or "current time" in command:
             now = datetime.now().strftime("%I:%M %p").lstrip("0")
             return f"It's {now}.", Emotion.NORMAL
 
-        if any(phrase in lowered for phrase in ("what's the date", "what is the date", "today's date")):
+        if any(
+            phrase in command
+            for phrase in (
+                "what's the date",
+                "what is the date",
+                "today's date",
+            )
+        ):
             today = datetime.now().strftime("%A, %B %d")
             return f"Today is {today}.", Emotion.NORMAL
 
-        if any(phrase in lowered for phrase in ("how are you", "you okay", "you there")):
-            return "All systems normal, and glad to be talking to you.", Emotion.HAPPY
+        if any(
+            phrase in command
+            for phrase in (
+                "how are you",
+                "you okay",
+                "you there",
+            )
+        ):
+            return (
+                "All systems normal, and glad to be talking to you.",
+                Emotion.HAPPY,
+            )
 
-        if any(phrase in lowered for phrase in ("thank you", "thanks")):
+        if "thank you" in command or "thanks" in command:
             return "Anytime.", Emotion.CALM
 
         return None
 
-    # --- AI brain turn, with tool-calling loop -----------------------------
-
     async def _run_brain_turn(self, user_text: str) -> None:
         self._memory.add_user_message(user_text)
-        relevant_facts = self._memory.relevant_facts_for(user_text)
-        system_prompt = build_system_prompt(relevant_facts)
 
-        messages: list[Message] = [Message(role="system", content=system_prompt)]
-        messages.extend(self._memory.get_conversation_history())
+        facts = self._memory.relevant_facts_for(user_text)
+        system_prompt = build_system_prompt(facts)
+
+        messages = [
+            Message(
+                role="system",
+                content=system_prompt,
+            )
+        ]
+        messages.extend(
+            self._memory.get_conversation_history()
+        )
 
         try:
-            reply_text = await self._converse_with_tools(messages)
+            reply = await self._converse_with_tools(messages)
         except LLMProviderError as exc:
             log.error("AI brain unavailable: {}", exc)
+
             await self._speak(
                 "I'm having trouble reaching my reasoning engine right now. "
                 "Check your internet connection or API keys.",
@@ -158,36 +244,55 @@ class Orchestrator:
             )
             return
 
-        if reply_text:
-            self._memory.add_assistant_message(reply_text)
-            await self._speak(reply_text, Emotion.NORMAL)
+        if reply:
+            self._memory.add_assistant_message(reply)
+            await self._speak(reply, Emotion.NORMAL)
 
-    async def _converse_with_tools(self, messages: list[Message]) -> str:
-        """Runs the request/tool-call/tool-result loop. Returns the final
-        natural-language reply, or "" if a confirmation is now pending
-        (in which case the confirmation question was already spoken by
-        _ask_for_confirmation and there is nothing further to say yet)."""
+    async def _converse_with_tools(
+        self,
+        messages: list[Message],
+    ) -> str:
         tool_specs = self._tools.get_specs()
 
-        for _round_num in range(_MAX_TOOL_ROUNDS):
-            response = await self._brain.complete(messages, tools=tool_specs)
+        for _ in range(MAX_TOOL_ROUNDS):
+            response = await self._brain.complete(
+                messages,
+                tools=tool_specs,
+            )
 
             if not response.tool_calls:
                 return response.content
 
-            confirm_needed = [
-                tc for tc in response.tool_calls if self._tools.requires_confirmation(tc.name, tc.arguments)
+            confirmation_tools = [
+                tool_call
+                for tool_call in response.tool_calls
+                if self._tools.requires_confirmation(
+                    tool_call.name,
+                    tool_call.arguments,
+                )
             ]
-            if confirm_needed:
-                assistant_message = Message(role="assistant", content=response.content, tool_calls=response.tool_calls)
-                await self._ask_for_confirmation(confirm_needed, messages + [assistant_message])
+
+            assistant_message = Message(
+                role="assistant",
+                content=response.content,
+                tool_calls=response.tool_calls,
+            )
+
+            if confirmation_tools:
+                await self._ask_for_confirmation(
+                    confirmation_tools,
+                    messages + [assistant_message],
+                )
                 return ""
 
-            assistant_message = Message(role="assistant", content=response.content, tool_calls=response.tool_calls)
             messages.append(assistant_message)
 
             for tool_call in response.tool_calls:
-                result = await self._tools.execute(tool_call.name, tool_call.arguments)
+                result = await self._tools.execute(
+                    tool_call.name,
+                    tool_call.arguments,
+                )
+
                 messages.append(
                     Message(
                         role="tool",
@@ -197,71 +302,155 @@ class Orchestrator:
                     )
                 )
 
-        log.warning("Hit max tool-calling rounds ({}) without a final answer.", _MAX_TOOL_ROUNDS)
-        return "I got stuck working through that — could you rephrase or simplify the request?"
+        log.warning(
+            "Maximum tool rounds ({}) reached.",
+            MAX_TOOL_ROUNDS,
+        )
 
-    # --- confirmation flow for destructive tools ---------------------------
+        return (
+            "I got stuck working through that. "
+            "Could you rephrase or simplify the request?"
+        )
 
-    async def _ask_for_confirmation(self, tool_calls: list[ToolCall], messages_so_far: list[Message]) -> None:
-        descriptions = ", ".join(self._describe_tool_call(tc) for tc in tool_calls)
-        self._pending_confirmation = {"tool_calls": tool_calls, "messages": messages_so_far}
-        await self._speak(f"Just to confirm — you want me to {descriptions}?", Emotion.WARNING)
+    async def _ask_for_confirmation(
+        self,
+        tool_calls: list[ToolCall],
+        messages: list[Message],
+    ) -> None:
+        descriptions = ", ".join(
+            self._describe_tool_call(tool_call)
+            for tool_call in tool_calls
+        )
+
+        self._pending_confirmation = {
+            "tool_calls": tool_calls,
+            "messages": messages,
+        }
+
+        await self._speak(
+            f"Just to confirm — you want me to {descriptions}?",
+            Emotion.WARNING,
+        )
 
     @staticmethod
-    def _describe_tool_call(tc: ToolCall) -> str:
-        readable: dict[str, Callable[[dict[str, Any]], str]] = {
-            "delete_file": lambda a: f"permanently delete '{a.get('path', '?')}'",
-            "write_file_content": lambda a: f"overwrite the existing file '{a.get('path', '?')}'",
-            "shutdown_pc": lambda a: "shut down this PC",
-            "restart_pc": lambda a: "restart this PC",
-            "sleep_pc": lambda a: "put this PC to sleep",
+    def _describe_tool_call(
+        tool_call: ToolCall,
+    ) -> str:
+        formatters: dict[
+            str,
+            Callable[[dict[str, Any]], str],
+        ] = {
+            "delete_file": lambda args:
+                f"permanently delete '{args.get('path', '?')}'",
+
+            "write_file_content": lambda args:
+                f"overwrite the existing file "
+                f"'{args.get('path', '?')}'",
+
+            "shutdown_pc": lambda _:
+                "shut down this PC",
+
+            "restart_pc": lambda _:
+                "restart this PC",
+
+            "sleep_pc": lambda _:
+                "put this PC to sleep",
         }
-        formatter = readable.get(tc.name)
-        return formatter(tc.arguments) if formatter else f"run {tc.name}"
 
-    async def _resolve_pending_confirmation(self, text: str) -> None:
-        assert self._pending_confirmation is not None
-        lowered = text.lower().strip()
-        tool_calls: list[ToolCall] = self._pending_confirmation["tool_calls"]
-        messages: list[Message] = self._pending_confirmation["messages"]
-        self._pending_confirmation = None
+        formatter = formatters.get(tool_call.name)
 
-        if any(word in lowered for word in _CONFIRM_NO):
-            await self._speak("Okay, I won't do that.", Emotion.CALM)
+        if formatter:
+            return formatter(tool_call.arguments)
+
+        return f"run {tool_call.name}"
+
+    async def _resolve_pending_confirmation(
+        self,
+        text: str,
+    ) -> None:
+        pending = self._pending_confirmation
+
+        if pending is None:
             return
 
-        if not any(word in lowered for word in _CONFIRM_YES):
-            # Ambiguous reply — don't guess on a destructive action.
+        self._pending_confirmation = None
+
+        command = text.lower().strip()
+        tool_calls = pending["tool_calls"]
+        messages = pending["messages"]
+
+        if any(word in command for word in CONFIRM_NO):
             await self._speak(
-                "I didn't catch a clear yes or no, so I'm not going to proceed. "
-                "Say the command again if you still want to.",
+                "Okay, I won't do that.",
+                Emotion.CALM,
+            )
+            return
+
+        if not any(word in command for word in CONFIRM_YES):
+            await self._speak(
+                "I didn't catch a clear yes or no, so I'm not "
+                "going to proceed. Say the command again if you "
+                "still want to.",
                 Emotion.WARNING,
             )
             return
 
         for tool_call in tool_calls:
             arguments = dict(tool_call.arguments)
+
             if tool_call.name == "delete_file":
-                arguments["permanent"] = True  # confirmation is specifically for the permanent path
-            result = await self._tools.execute(tool_call.name, arguments)
-            messages.append(Message(role="tool", content=str(result), tool_call_id=tool_call.id, name=tool_call.name))
+                arguments["permanent"] = True
+
+            result = await self._tools.execute(
+                tool_call.name,
+                arguments,
+            )
+
+            messages.append(
+                Message(
+                    role="tool",
+                    content=str(result),
+                    tool_call_id=tool_call.id,
+                    name=tool_call.name,
+                )
+            )
 
         try:
-            follow_up = await self._brain.complete(messages, tools=self._tools.get_specs())
-            reply_text = follow_up.content or "Done."
+            response = await self._brain.complete(
+                messages,
+                tools=self._tools.get_specs(),
+            )
+            reply = response.content or "Done."
         except LLMProviderError:
-            reply_text = "Done."
+            reply = "Done."
 
-        self._memory.add_assistant_message(reply_text)
-        await self._speak(reply_text, Emotion.NORMAL)
+        self._memory.add_assistant_message(reply)
+        await self._speak(reply, Emotion.NORMAL)
 
-    # --- speaking, with mic pause to avoid self-triggering -----------------
+    async def _speak(
+        self,
+        text: str,
+        emotion: Emotion,
+    ) -> None:
+        if not text.strip():
+            return
 
-    async def _speak(self, text: str, emotion: Emotion) -> None:
         self._conversation.pause_listening()
-        await self._bus.publish(Event(EventType.SPEAKING_STARTED, payload={"text": text}))
+
+        await self._bus.publish(
+            Event(
+                EventType.SPEAKING_STARTED,
+                payload={"text": text},
+            )
+        )
+
         try:
             await self._tts.speak(text, emotion)
         finally:
-            await self._bus.publish(Event(EventType.SPEAKING_FINISHED, payload={"text": text}))
+            await self._bus.publish(
+                Event(
+                    EventType.SPEAKING_FINISHED,
+                    payload={"text": text},
+                )
+            )
             self._conversation.resume_listening()

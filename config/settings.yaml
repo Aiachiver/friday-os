@@ -14,7 +14,7 @@ app:
 wake_word:
   phrase: "friday"          # single word only, per spec — no "hey"/"ok" prefix
   sensitivity: 0.55
-  engine: "porcupine"
+  engine: "whisper"
 
 voice:
   stt_engine: "faster_whisper"   # faster_whisper | vosk | google
@@ -38,7 +38,6 @@ brain:
     - openrouter
     - together
     - openai
-    - ollama
   max_context_messages: 20
   temperature: 0.6
 

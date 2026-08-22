@@ -1,15 +1,3 @@
-"""
-ConversationManager owns the microphone end-to-end:
-
-  listening for "Friday" -> recording the utterance that follows ->
-  detecting when the user stopped talking -> handing the audio to STT ->
-  publishing the transcript on the event bus for the orchestrator to act on.
-
-Runs on its own background thread (audio I/O is blocking by nature) and
-talks to the rest of the app only through the async EventBus via
-publish_sync, which schedules the coroutine onto the main asyncio loop.
-"""
-
 from __future__ import annotations
 
 import threading
@@ -26,22 +14,14 @@ from app.voice.audio_io import AudioStream, rms_energy
 from app.voice.stt.base import STTEngine
 from app.voice.wake_word.base import WakeWordEngine
 
+log = get_logger(__name__)
+
 
 class ConversationManagerProtocol(Protocol):
-    """What Orchestrator (and anything else that just needs to control
-    the voice input lifecycle) actually depends on. Both ConversationManager
-    and NullConversationManager satisfy this structurally -- callers accept
-    this Protocol instead of the concrete ConversationManager class so
-    main.py's voice/text-only fallback (see _build_voice_pipeline) doesn't
-    need an artificial shared base class, just a matching shape."""
-
     def start(self) -> None: ...
     def stop(self) -> None: ...
     def pause_listening(self) -> None: ...
     def resume_listening(self) -> None: ...
-
-
-log = get_logger(__name__)
 
 
 class _State(Enum):
@@ -50,17 +30,10 @@ class _State(Enum):
 
 
 class NullConversationManager:
-    """
-    Stand-in used when voice input can't start (e.g. the Porcupine
-    keyword file hasn't been generated yet — see WAKE_WORD_SETUP.md).
-    Lets the Orchestrator run in text-only mode against the GUI without
-    every call site needing an `if conversation_manager is not None` check.
-    This is a deliberate Null Object, not an unfinished stub — it has a
-    complete, correct implementation of "there is no microphone."
-    """
+    """No-op voice manager used when voice input is unavailable."""
 
     def start(self) -> None:
-        log.warning("Voice input is disabled (NullConversationManager). Text-only mode.")
+        log.warning("Voice input disabled. Running in text-only mode.")
 
     def stop(self) -> None:
         pass
@@ -86,41 +59,62 @@ class ConversationManager:
         self._input_device = input_device
 
         settings = get_settings()
-        self._silence_threshold: float = settings.get("voice.silence_threshold", 0.02)
-        self._silence_duration_s: float = settings.get("voice.silence_duration_seconds", 1.2)
-        self._max_utterance_s: float = settings.get("voice.max_utterance_seconds", 15)
+        self._silence_threshold = settings.get(
+            "voice.silence_threshold", 0.02
+        )
+        self._silence_duration_s = settings.get(
+            "voice.silence_duration_seconds", 1.2
+        )
+        self._max_utterance_s = settings.get(
+            "voice.max_utterance_seconds", 15
+        )
 
         self._thread: threading.Thread | None = None
         self._stop_flag = threading.Event()
-        self._paused = threading.Event()  # set while FRIDAY is speaking, to avoid self-triggering
+        self._paused = threading.Event()
 
-    # --- public control -------------------------------------------------
+    # ------------------------------------------------------------------
+    # Public lifecycle
+    
 
     def start(self) -> None:
-        if self._thread is not None:
-            log.warning("ConversationManager.start() called twice; ignoring.")
+        if self._thread and self._thread.is_alive():
+            log.warning("ConversationManager is already running.")
             return
+
         self._stop_flag.clear()
-        self._thread = threading.Thread(target=self._run, name="friday-audio-loop", daemon=True)
+        self._thread = threading.Thread(
+            target=self._run,
+            name="friday-audio-loop",
+            daemon=True,
+        )
         self._thread.start()
         log.info("ConversationManager started.")
 
     def stop(self) -> None:
         self._stop_flag.set()
-        if self._thread is not None:
-            self._thread.join(timeout=3.0)
-            self._thread = None
-        self._wake_word.close()
+
+        thread = self._thread
+        if thread and thread.is_alive():
+            thread.join(timeout=3.0)
+
+        self._thread = None
+
+        try:
+            self._wake_word.close()
+        except Exception:
+            log.exception("Failed to close wake-word engine.")
+
         log.info("ConversationManager stopped.")
 
     def pause_listening(self) -> None:
-        """Call while FRIDAY is speaking so it doesn't hear itself."""
         self._paused.set()
 
     def resume_listening(self) -> None:
         self._paused.clear()
 
-    # --- internal loop ----------------------------------------------------
+    
+    # Audio loop
 
     def _run(self) -> None:
         sample_rate = self._wake_word.sample_rate
@@ -139,75 +133,125 @@ class ConversationManager:
             frame_duration_s * 1000,
         )
 
-        with AudioStream(sample_rate, frame_length, device=self._input_device) as stream:
-            for frame in stream.frames():
-                if self._stop_flag.is_set():
-                    break
-                if self._paused.is_set():
-                    continue
+        try:
+            with AudioStream(
+                sample_rate,
+                frame_length,
+                device=self._input_device,
+            ) as stream:
 
-                if state is _State.LISTENING_FOR_WAKE_WORD:
-                    if self._wake_word.process(frame):
+                for frame in stream.frames():
+                    if self._stop_flag.is_set():
+                        break
+
+                    if self._paused.is_set():
+                        continue
+
+                    if state is _State.LISTENING_FOR_WAKE_WORD:
+                        if not self._wake_word.process(frame):
+                            continue
+
                         log.info("Wake word detected.")
+
                         state = _State.RECORDING_UTTERANCE
-                        utterance_buffer = []
+                        utterance_buffer.clear()
                         silence_elapsed_s = 0.0
                         utterance_elapsed_s = 0.0
-                        self._bus.publish_sync(Event(EventType.WAKE_WORD_DETECTED))
-                        self._bus.publish_sync(Event(EventType.LISTENING_STARTED))
 
-                elif state is _State.RECORDING_UTTERANCE:
+                        self._publish(EventType.WAKE_WORD_DETECTED)
+                        self._publish(EventType.LISTENING_STARTED)
+                        continue
+
+                    # Recording user command
                     utterance_buffer.append(frame)
                     utterance_elapsed_s += frame_duration_s
 
-                    energy = rms_energy(frame)
-                    if energy < self._silence_threshold:
+                    if rms_energy(frame) < self._silence_threshold:
                         silence_elapsed_s += frame_duration_s
                     else:
                         silence_elapsed_s = 0.0
 
-                    utterance_finished = (
-                        silence_elapsed_s >= self._silence_duration_s or utterance_elapsed_s >= self._max_utterance_s
+                    finished = (
+                        silence_elapsed_s >= self._silence_duration_s
+                        or utterance_elapsed_s >= self._max_utterance_s
                     )
-                    if utterance_finished:
-                        self._finish_utterance(utterance_buffer, sample_rate)
+
+                    if finished:
+                        self._finish_utterance(
+                            utterance_buffer,
+                            sample_rate,
+                        )
+
                         state = _State.LISTENING_FOR_WAKE_WORD
-                        utterance_buffer = []
+                        utterance_buffer.clear()
+                        silence_elapsed_s = 0.0
+                        utterance_elapsed_s = 0.0
 
-        log.info("Audio loop exited.")
+        except Exception:
+            log.exception("Audio loop crashed.")
 
-    def _finish_utterance(self, buffer: list[np.ndarray], sample_rate: int) -> None:
-        self._bus.publish_sync(Event(EventType.LISTENING_STOPPED))
+        finally:
+            log.info("Audio loop exited.")
+
+
+    # Utterance processing
+
+    def _finish_utterance(
+        self,
+        buffer: list[np.ndarray],
+        sample_rate: int,
+    ) -> None:
+        self._publish(EventType.LISTENING_STOPPED)
 
         if not buffer:
             return
+
         pcm = np.concatenate(buffer)
 
-        # A very short/near-silent buffer means the wake word fired but the
-        # user didn't actually say a command — don't waste a Whisper pass on it.
-        if pcm.shape[0] < sample_rate * 0.3:
-            log.debug("Utterance too short ({} samples); skipping transcription.", pcm.shape[0])
+        # Ignore extremely short commands.
+        if pcm.size < sample_rate * 0.3:
+            log.debug(
+                "Utterance too short ({} samples); skipping.",
+                pcm.size,
+            )
             return
 
         try:
             result = self._stt.transcribe(pcm, sample_rate)
-        except Exception as exc:  # noqa: BLE001 — genuinely must not crash the audio thread
-            log.exception("STT transcription failed")
-            self._bus.publish_sync(Event(EventType.TRANSCRIPT_FAILED, payload={"error": str(exc)}))
+        except Exception as exc:
+            log.exception("STT transcription failed.")
+            self._publish(
+                EventType.TRANSCRIPT_FAILED,
+                payload={"error": str(exc)},
+            )
             return
 
-        if not result.text:
+        text = result.text.strip()
+
+        if not text:
             log.debug("Empty transcript; nothing to publish.")
             return
 
+        self._publish(
+            EventType.TRANSCRIPT_READY,
+            payload={
+                "text": text,
+                "language": result.language,
+                "confidence": result.confidence,
+                "timestamp": time.time(),
+            },
+        )
+
+    # Event helper
+
+    def _publish(
+        self,
+        event_type: EventType,
+        payload: dict | None = None,
+    ) -> None:
         self._bus.publish_sync(
             Event(
-                EventType.TRANSCRIPT_READY,
-                payload={
-                    "text": result.text,
-                    "language": result.language,
-                    "confidence": result.confidence,
-                    "timestamp": time.time(),
-                },
+                event_type,
+                payload=payload or {},
             )
         )

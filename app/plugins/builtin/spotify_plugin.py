@@ -116,32 +116,59 @@ class SpotifyPlugin(BasePlugin):
         }
 
     def search_and_play(self, query: str) -> dict[str, Any]:
+        """Search Spotify for a track or artist and start playback."""
         try:
             client = self._get_client()
         except RuntimeError as exc:
             return {"success": False, "error": str(exc)}
 
+        query = query.strip()
+        if not query:
+            return {
+                "success": False,
+                "error": "No song or artist was provided.",
+            }
+
         try:
-            results = client.search(q=query, type="track", limit=1)
+            results = client.search(
+                q=query,
+                type="track",
+                limit=1,
+            )
+
             tracks = results.get("tracks", {}).get("items", [])
+
             if not tracks:
-                return {"success": False, "error": f"No track found matching '{query}'"}
+                return {
+                    "success": False,
+                    "error": f"No track found matching '{query}'.",
+                }
+
             track = tracks[0]
             client.start_playback(uris=[track["uri"]])
+
+            return {
+                "success": True,
+                "track": track["name"],
+                "artist": ", ".join(
+                    artist["name"] for artist in track["artists"]
+                ),
+            }
+
         except spotipy.SpotifyException as exc:
             if exc.http_status == 404:
                 return {
                     "success": False,
-                    "error": "No active Spotify device found — open Spotify on this PC or phone first.",
+                    "error": (
+                        "No active Spotify device found. "
+                        "Open Spotify on your PC or phone first."
+                    ),
                 }
-            return {"success": False, "error": f"Spotify error: {exc}"}
 
-        return {
-            "success": True,
-            "track": track["name"],
-            "artist": ", ".join(a["name"] for a in track["artists"]),
-        }
-
+            return {
+                "success": False,
+                "error": f"Spotify error: {exc}",
+            }
     def register_tools(self, register: ToolRegistrar) -> None:
         register(
             "spotify_control_playback",
