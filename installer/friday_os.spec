@@ -68,7 +68,8 @@ datas += [
 hiddenimports += [
     "sqlalchemy.dialects.sqlite.pysqlite",
     "matplotlib.backends.backend_agg",
-    "PySide6.QtSvg",  # icon rendering used by several Qt widgets even when not imported directly
+    "PySide6.QtSvg",
+    "logging.config",
 ]
 
 a = Analysis(

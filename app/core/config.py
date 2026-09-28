@@ -59,7 +59,11 @@ class Secrets(BaseSettings):
     """Values loaded strictly from environment / .env (never from yaml)."""
 
     model_config = SettingsConfigDict(
-        env_file=str(PROJECT_ROOT / ".env"),
+        env_file=str(
+            _compute_user_data_root() / ".env"
+            if getattr(sys, "frozen", False)
+            else PROJECT_ROOT / ".env"
+        ),
         env_file_encoding="utf-8",
         extra="ignore",
     )

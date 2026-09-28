@@ -16,9 +16,10 @@ from app.data.models import Base  # noqa: E402
 # access to the values within the .ini file in use.
 config = context.config
 
-# Interpret the config file for Python logging.
-# This line sets up loggers basically.
-if config.config_file_name is not None:
+# In PyInstaller GUI builds, sys.stderr is None.
+# Alembic's default logging config expects stderr, so skip
+# fileConfig() and let FRIDAY OS's own Loguru logging handle it.
+if config.config_file_name is not None and sys.stderr is not None:
     fileConfig(config.config_file_name)
 
 # Our models' metadata drives autogenerate.

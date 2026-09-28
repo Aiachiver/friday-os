@@ -26,10 +26,12 @@ _CONFIGURED = False
 def configure_logging() -> None:
     """Idempotent. Call once at app startup (main.py does this)."""
     global _CONFIGURED
+
     if _CONFIGURED:
         return
 
     settings = get_settings()
+
     log_level = settings.get("logging.level", settings.secrets.log_level)
     rotate_mb = settings.get("logging.rotate_mb", 10)
     retain_days = settings.get("logging.retain_days", 14)
@@ -37,20 +39,25 @@ def configure_logging() -> None:
     log_dir = settings.user_data_root / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.remove()  # drop default handler so we control format/level
+    # Remove Loguru's default handler.
+    logger.remove()
 
-    logger.add(
-        sys.stderr,
-        level=log_level,
-        colorize=True,
-        format=(
-            "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
-            "<level>{level: <8}</level> | "
-            "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
-            "<level>{message}</level>"
-        ),
-    )
+    # In PyInstaller GUI builds (console=False), sys.stderr can be None.
+    # Only add the console sink when stderr actually exists.
+    if sys.stderr is not None:
+        logger.add(
+            sys.stderr,
+            level=log_level,
+            colorize=True,
+            format=(
+                "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+                "<level>{level: <8}</level> | "
+                "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
+                "<level>{message}</level>"
+            ),
+        )
 
+    # Always keep a file log for the installed application.
     logger.add(
         log_dir / "friday.log",
         level=log_level,
@@ -59,7 +66,7 @@ def configure_logging() -> None:
         compression="zip",
         encoding="utf-8",
         backtrace=True,
-        diagnose=False,  # keep False in prod: avoids leaking variable values in logs
+        diagnose=False,
     )
 
     _CONFIGURED = True
