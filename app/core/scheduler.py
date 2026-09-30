@@ -35,18 +35,30 @@ class BackgroundScheduler:
     def __init__(self, bus: EventBus, event_loop: asyncio.AbstractEventLoop) -> None:
         self._bus = bus
         self._scheduler = AsyncIOScheduler(event_loop=event_loop)
+
         settings = get_settings()
-        self._alert_check_interval_s: int = settings.get("finance.alert_check_interval_seconds", 60)
-        self._update_check_interval_h: int = settings.get("update.check_interval_hours", 24)
-        self._reminder_check_interval_s: int = settings.get("productivity.reminder_check_interval_seconds", 30)
+
+        self._alert_check_interval_s: int = settings.get(
+            "finance.alert_check_interval_seconds",
+            60,
+        )
+
+        self._update_check_interval_h: int = settings.get(
+            "update.check_interval_hours",
+            24,
+        )
+
+        self._reminder_check_interval_s: int = settings.get(
+            "productivity.reminder_check_interval_seconds",
+            30,
+        )
 
     def start(self) -> None:
-        # NOTE: next_run_time=None does NOT mean "skip the immediate run,
-        # start after one interval" — per APScheduler's own docs it means
-        # "add the job as paused," i.e. it would never run at all until
-        # someone explicitly calls resume_job(). To actually delay the
-        # first run by one interval, we compute a real datetime instead.
-        first_alert_check = datetime.now() + timedelta(seconds=self._alert_check_interval_s)
+        # Delay the first price-alert check until one interval has passed.
+        first_alert_check = datetime.now() + timedelta(
+            seconds=self._alert_check_interval_s
+        )
+
         self._scheduler.add_job(
             self._check_price_alerts,
             "interval",
@@ -55,9 +67,10 @@ class BackgroundScheduler:
             next_run_time=first_alert_check,
         )
 
-        # Update check: run once shortly after startup (so a user who
-        # rarely closes the app still gets checked promptly), then daily.
+        # Update check:
+        # Run once shortly after startup, then repeat every configured interval.
         first_update_check = datetime.now() + timedelta(minutes=1)
+
         self._scheduler.add_job(
             self._check_for_update,
             "interval",
@@ -66,7 +79,11 @@ class BackgroundScheduler:
             next_run_time=first_update_check,
         )
 
-        first_reminder_check = datetime.now() + timedelta(seconds=self._reminder_check_interval_s)
+        # Delay the first reminder check until one interval has passed.
+        first_reminder_check = datetime.now() + timedelta(
+            seconds=self._reminder_check_interval_s
+        )
+
         self._scheduler.add_job(
             self._check_due_reminders,
             "interval",
@@ -76,8 +93,10 @@ class BackgroundScheduler:
         )
 
         self._scheduler.start()
+
         log.info(
-            "Background scheduler started (price alerts every {}s, update check every {}h, " "reminders every {}s).",
+            "Background scheduler started "
+            "(price alerts every {}s, update check every {}h, reminders every {}s).",
             self._alert_check_interval_s,
             self._update_check_interval_h,
             self._reminder_check_interval_s,
@@ -88,16 +107,38 @@ class BackgroundScheduler:
         log.info("Background scheduler stopped.")
 
     async def _check_price_alerts(self) -> None:
-        # check_alerts() does blocking network I/O (yfinance) — run it off
-        # the event loop so a slow/hanging quote fetch doesn't freeze the
-        # GUI or voice pipeline.
-        triggered = await asyncio.to_thread(alert_service.check_alerts)
+        # check_alerts() does blocking network I/O (yfinance).
+        # Run it off the event loop so a slow quote fetch does not
+        # freeze the GUI or voice pipeline.
+        triggered = await asyncio.to_thread(
+            alert_service.check_alerts
+        )
+
         for alert in triggered:
-            await self._bus.publish(Event(EventType.PRICE_ALERT_TRIGGERED, payload=alert))
+            await self._bus.publish(
+                Event(
+                    EventType.PRICE_ALERT_TRIGGERED,
+                    payload=alert,
+                )
+            )
 
     async def _check_for_update(self) -> None:
         result = await check_for_update()
-        if result.checked and result.update_available:
+
+        if not result.checked:
+            log.warning(
+                "Update check could not be completed: {}",
+                result.error or "unknown error",
+            )
+            return
+
+        if result.update_available:
+            log.info(
+                "Update available: v{} -> v{}",
+                result.current_version,
+                result.latest_version,
+            )
+
             await self._bus.publish(
                 Event(
                     EventType.UPDATE_AVAILABLE,
@@ -105,13 +146,27 @@ class BackgroundScheduler:
                         "current_version": result.current_version,
                         "latest_version": result.latest_version,
                         "release_url": result.release_url,
+                        "installer_url": result.installer_url,
                     },
                 )
             )
+        else:
+            log.info(
+                "FRIDAY OS is up to date: v{}",
+                result.current_version,
+            )
 
     async def _check_due_reminders(self) -> None:
-        # get_due_reminders() does blocking DB I/O -- same reasoning as
-        # the alert check above, keep it off the event loop.
-        due = await asyncio.to_thread(productivity_service.get_due_reminders)
+        # get_due_reminders() does blocking DB I/O.
+        # Keep it off the event loop for the same reason as alerts.
+        due = await asyncio.to_thread(
+            productivity_service.get_due_reminders
+        )
+
         for reminder in due:
-            await self._bus.publish(Event(EventType.REMINDER_DUE, payload=reminder))
+            await self._bus.publish(
+                Event(
+                    EventType.REMINDER_DUE,
+                    payload=reminder,
+                )
+            )

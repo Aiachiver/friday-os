@@ -13,6 +13,9 @@ calls startup_manager directly and takes effect immediately (there's no
 from __future__ import annotations
 
 import asyncio
+import os
+import subprocess
+import tempfile
 
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -30,7 +33,7 @@ from PySide6.QtWidgets import (
 from app._version import __version__
 from app.automation.desktop import startup_manager
 from app.core.config import get_settings
-from app.core.update_checker import check_for_update
+from app.core.update_checker import check_for_update, download_installer
 from app.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -165,6 +168,7 @@ class _BrainTab(QWidget):
 class _AboutTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
+
         layout = QVBoxLayout(self)
 
         layout.addWidget(QLabel(f"<b>FRIDAY OS</b> v{__version__}"))
@@ -174,41 +178,157 @@ class _AboutTab(QWidget):
         self._check_button.clicked.connect(self._on_check_updates)
         layout.addWidget(self._check_button)
 
+        self._update_button = QPushButton("Download & Install Update")
+        self._update_button.setEnabled(False)
+        self._update_button.clicked.connect(self._on_install_update)
+        layout.addWidget(self._update_button)
+
         self._status_label = QLabel("")
         self._status_label.setWordWrap(True)
-        self._status_label.setStyleSheet("color: #9AA4B2; font-size: 11px;")
+        self._status_label.setStyleSheet(
+            "color: #9AA4B2; font-size: 11px;"
+        )
         layout.addWidget(self._status_label)
 
         layout.addStretch()
 
+        self._installer_url: str | None = None
+        self._latest_version: str | None = None
+
     def _on_check_updates(self) -> None:
         self._check_button.setEnabled(False)
+        self._update_button.setEnabled(False)
         self._status_label.setText("Checking...")
+
         asyncio.ensure_future(self._run_check())
 
     async def _run_check(self) -> None:
         try:
             result = await check_for_update()
+
+        except Exception as exc:
+            log.exception("Update check failed: {}", exc)
+            self._status_label.setText(
+                f"Update check failed: {exc}"
+            )
+            return
+
         finally:
             self._check_button.setEnabled(True)
 
         if not result.checked:
             self._status_label.setText(
-                result.error or "Update checks aren't configured yet (see config/settings.yaml: update.github_repo)."
+                result.error
+                or "Update checks aren't configured yet."
             )
             return
 
         if result.update_available:
-            self._status_label.setText(f"Update available: v{result.latest_version} — {result.release_url}")
+            self._installer_url = result.installer_url
+            self._latest_version = result.latest_version
+
+            if result.installer_url:
+                self._update_button.setEnabled(True)
+
+                self._status_label.setText(
+                    f"Update available: "
+                    f"v{result.latest_version}"
+                )
+
+                QMessageBox.information(
+                    self,
+                    "Update Available",
+                    f"FRIDAY OS v{result.latest_version} "
+                    f"is available.\n\n"
+                    f"You have v{result.current_version}.\n\n"
+                    f"Click 'Download & Install Update' "
+                    f"to continue.",
+                )
+
+            else:
+                self._status_label.setText(
+                    f"Update v{result.latest_version} is available, "
+                    f"but no Windows installer was found."
+                )
+
+        else:
+            self._installer_url = None
+            self._latest_version = None
+
+            self._status_label.setText(
+                f"You're up to date "
+                f"(v{result.current_version})."
+            )
+
+    def _on_install_update(self) -> None:
+        if not self._installer_url:
+            return
+
+        self._update_button.setEnabled(False)
+        self._check_button.setEnabled(False)
+        self._status_label.setText(
+            "Downloading update..."
+        )
+
+        asyncio.ensure_future(
+            self._download_and_install()
+        )
+
+    async def _download_and_install(self) -> None:
+        try:
+            version = self._latest_version or "latest"
+
+            installer_name = (
+                f"FridayOS-Setup-{version}.exe"
+            )
+
+            installer_path = os.path.join(
+                tempfile.gettempdir(),
+                installer_name,
+            )
+
+            await download_installer(
+                self._installer_url,
+                installer_path,
+            )
+
+            self._status_label.setText(
+                "Download complete. Starting installer..."
+            )
+
+            log.info(
+                "Launching FRIDAY OS installer: {}",
+                installer_path,
+            )
+
+            subprocess.Popen(
+                [installer_path],
+                close_fds=True,
+            )
+
             QMessageBox.information(
                 self,
-                "Update Available",
-                f"FRIDAY OS v{result.latest_version} is available (you have v{result.current_version}).\n\n"
-                f"{result.release_url}",
+                "Update Ready",
+                "The new FRIDAY OS installer has been "
+                "started.\n\n"
+                "Please close FRIDAY OS and complete "
+                "the installation.",
             )
-        else:
-            self._status_label.setText(f"You're up to date (v{result.current_version}).")
 
+        except Exception as exc:
+            log.exception(
+                "Failed to download/install update: {}",
+                exc,
+            )
+
+            self._status_label.setText(
+                f"Update failed: {exc}"
+            )
+
+            self._update_button.setEnabled(True)
+
+        finally:
+            self._check_button.setEnabled(True)
 
 class SettingsDialog(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:

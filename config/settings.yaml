@@ -69,11 +69,10 @@ productivity:
   reminder_check_interval_seconds: 30
 
 update:
-  # Set this once you publish FRIDAY OS on GitHub, e.g. "Suraj/friday-os".
-  # Update checks are skipped entirely (no error, just a debug log) while
-  # this is empty -- there's nothing to check against yet.
-  github_repo: ""
+  # Set this once you publish FRIDAY OS on GitHub.
+  github_repo: "Aiachiver/friday-os"
   check_interval_hours: 24
+
 
 logging:
   level: "INFO"
