@@ -9,4 +9,4 @@ Read by:
 Bump this one line for a release; everything else derives from it.
 """
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
