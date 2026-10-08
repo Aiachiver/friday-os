@@ -88,6 +88,34 @@ migration workflow.
 ## Building a distributable installer
 
 See `docs/architecture/INSTALLER_GUIDE.md` for the full guide. Short
+
+## 🚀 Latest Release
+
+**FRIDAY OS v0.6.1**
+
+A production-ready Windows AI desktop assistant.
+
+### Download
+
+👉 [Download FRIDAY OS v0.6.1](../../releases/tag/v0.6.1)
+
+### Installation
+
+1. Download `FridayOS-Setup-0.6.1.exe`
+2. Run the installer
+3. Choose installation location
+4. Launch FRIDAY OS
+
+### Features
+
+- 🤖 Multi-provider AI
+- 🎙️ Voice commands
+- 🔊 Text-to-Speech
+- 🧠 Memory system
+- 🌐 Browser automation
+- ⚙️ Task scheduler
+- 🔄 Automatic update checking
+- 🖥️ Windows desktop GUI
 version: `.\scripts\build_installer.ps1` on Windows produces a real
 `FridayOS-Setup-X.Y.Z.exe`. This step is Windows-only (PyInstaller
 doesn't cross-compile).
